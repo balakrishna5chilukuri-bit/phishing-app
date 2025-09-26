@@ -200,17 +200,69 @@ with tabs[1]:
 # ---------- History ----------
 with tabs[2]:
     st.subheader("Scan History")
+
+    # --- File upload ---
+    uploaded = st.file_uploader("Upload scan history / URL list / enrichment JSON", type=["csv","json","ndjson"])
+    if uploaded:
+        try:
+            if uploaded.name.endswith(".json"):
+                import json
+                data = json.load(uploaded)
+                if isinstance(data, list):
+                    df = pd.DataFrame(data)
+                else:
+                    df = pd.json_normalize(data)
+            elif uploaded.name.endswith(".ndjson"):
+                import json
+                lines = uploaded.getvalue().decode("utf-8").splitlines()
+                data = [json.loads(l) for l in lines]
+                df = pd.DataFrame(data)
+            else:
+                df = pd.read_csv(uploaded)
+        except Exception as e:
+            st.error(f"Failed to read uploaded file: {e}")
+            df = None
+
+        if df is not None:
+            st.success(f"Loaded {len(df)} rows from `{uploaded.name}`")
+            st.dataframe(df.head())
+
+            if "url" in df.columns and "score" not in df.columns:
+                # Looks like a batch URL list
+                if st.button("Scan all uploaded URLs"):
+                    for u in df["url"].astype(str).tolist():
+                        result = perform_url_scan(u)
+                        st.session_state.history.insert(0, result)
+                    st.success("Batch scan results added to history")
+            else:
+                # Looks like scan history / enrichment data
+                if st.button("Import rows into history"):
+                    for _, row in df.iterrows():
+                        item = {
+                            "id": int(datetime.utcnow().timestamp()),
+                            "url": str(row.get("url", "")),
+                            "risk": row.get("risk", "Unknown"),
+                            "score": int(row.get("score", 0)) if "score" in row else 0,
+                            "timestamp": str(row.get("timestamp", datetime.utcnow().isoformat())),
+                            "findings": []
+                        }
+                        st.session_state.history.insert(0, item)
+                    st.success("Rows imported into history")
+
+    # --- Display history ---
     history = st.session_state.history
     if history:
-        # show table with selectable rows
-        df = pd.DataFrame([{"URL": h["url"], "Risk": h["risk"], "Score": h["score"], "Timestamp": h["timestamp"], "id": h["id"]} for h in history])
+        df = pd.DataFrame([
+            {"URL": h["url"], "Risk": h["risk"], "Score": h["score"], "Timestamp": h["timestamp"], "id": h["id"]}
+            for h in history
+        ])
         st.dataframe(df.drop(columns=["id"]), use_container_width=True)
 
-        # allow user to pick an entry to view details
         ids = [h["id"] for h in history]
         labels = [f"{h['timestamp']}  |  {h['url'][:80]}" for h in history]
         selected_idx = st.selectbox("Select a scan to view details", options=range(len(history)), format_func=lambda i: labels[i])
         item = history[selected_idx]
+
         st.markdown("### Selected Scan Details")
         st.write("**URL:**", item["url"])
         st.write("**Risk:**", item["risk"], f"({item['score']}%)")
@@ -221,10 +273,6 @@ with tabs[2]:
                 st.markdown(f"- **{f['description']}** — {f['details']}")
         else:
             st.info("No findings for this scan.")
-
-        # allow download of history as CSV
-        pd_hist = pd.DataFrame(history)
-        csv = pd_hist.to_csv(index=False)
-        st.download_button("Download history CSV", csv, file_name="scan_history.csv", mime="text/csv")
     else:
-        st.info("No scans yet. Use the URL Scanner tab to run a scan.")
+        st.info("No scans yet. Use the URL Scanner or upload a file.")
+
